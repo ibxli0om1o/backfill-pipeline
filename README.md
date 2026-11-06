@@ -53,6 +53,11 @@ done	2026-10-01	48213
 `--end` is exclusive. `--limit N` stops after N partitions, which is handy for a
 first canary. Exit code is `0` only when every planned partition is `done`.
 
+Serialization failures, deadlocks, lock timeouts and dropped connections are
+retried in place: `--max-retries` extra attempts (default 2) with a backoff that
+starts at `--retry-delay` (default 2s) and doubles. Constraint violations and
+bad SQL are not retried, because waiting cannot fix them.
+
 ## Data contract
 
 The template is plain SQL. Three placeholders are required; `{partition_label}`
@@ -117,6 +122,9 @@ with DAG(
   skipped, `running` and `failed` ones are retried.
 - **Retry one partition.** Delete its row from `backfill_partitions` and resume
   the run; the runner re-inserts it as `pending`.
+- **Watch retries.** Every retry logs `retry<TAB>day<TAB>attempt N<TAB>SQLSTATE
+  <TAB>seconds`; a `failed` line means the budget ran out or the error was not
+  transient.
 - **Abort.** `Ctrl-C` is safe: the open partition rolls back and stays
   `running`, every committed partition stays committed.
 - **Roll back a finished partition.** Point the template at the previous
