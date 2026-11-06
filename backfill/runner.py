@@ -7,10 +7,12 @@ partition is recorded exactly once.
 
 from __future__ import annotations
 
+import time
 from datetime import date
 
 from .partitions import label
 from .plan import Plan, PlanError
+from .policy import RetryPolicy, is_retryable, sqlstate
 
 _RUNS_DDL = """
 CREATE TABLE IF NOT EXISTS backfill_runs (
@@ -131,6 +133,8 @@ def run(
     *,
     execute: bool,
     limit: int | None = None,
+    policy: RetryPolicy | None = None,
+    sleep=time.sleep,
     log=print,
 ) -> int:
     """Execute (or merely describe) the plan and return a process exit code."""
@@ -143,18 +147,29 @@ def run(
 
     import psycopg
 
+    attempts = policy or RetryPolicy()
     failures = 0
     with psycopg.connect(dsn) as conn:
         _bootstrap(conn)
         _register(conn, plan, run_id)
         for day in _next_partitions(conn, run_id, days):
-            try:
-                rows = _run_partition(conn, plan, run_id, day)
-            except psycopg.Error as exc:
-                failures += 1
-                _mark(conn, run_id, day, "failed", error=str(exc).strip()[:1500])
-                log(f"failed\t{day.isoformat()}\t{type(exc).__name__}: "
-                    + " ".join(str(exc).split()))
-                continue
-            log(f"done\t{day.isoformat()}\t{rows}")
+            attempt = 0
+            while True:
+                attempt += 1
+                try:
+                    rows = _run_partition(conn, plan, run_id, day)
+                except psycopg.Error as exc:
+                    code = sqlstate(exc)
+                    if attempt < attempts.max_attempts and is_retryable(exc):
+                        waited = attempts.pause(attempt, sleep=sleep)
+                        log(f"retry\t{day.isoformat()}\tattempt {attempt}"
+                            f"\t{code or type(exc).__name__}\t{waited:.1f}s")
+                        continue
+                    failures += 1
+                    _mark(conn, run_id, day, "failed", error=str(exc).strip()[:1500])
+                    log(f"failed\t{day.isoformat()}\t{code or type(exc).__name__}: "
+                        + " ".join(str(exc).split()))
+                    break
+                log(f"done\t{day.isoformat()}\t{rows}")
+                break
     return 1 if failures else 0
