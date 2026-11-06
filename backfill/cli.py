@@ -8,7 +8,6 @@ import sys
 
 from .partitions import PartitionError, parse_day
 from .plan import PlanError, build_plan
-from .policy import RetryPolicy
 from .runner import run
 
 
@@ -33,10 +32,6 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Postgres DSN, defaults to $BACKFILL_DSN")
     parser.add_argument("--limit", type=int, metavar="N",
                         help="stop after N partitions")
-    parser.add_argument("--max-retries", type=int, default=2, metavar="N",
-                        help="extra attempts for transient errors, default 2")
-    parser.add_argument("--retry-delay", type=float, default=2.0, metavar="SECONDS",
-                        help="first backoff delay, doubled per attempt, default 2.0")
     parser.add_argument("--execute", action="store_true",
                         help="write to the warehouse; default is a dry run")
     return parser
@@ -56,14 +51,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
-    try:
-        policy = RetryPolicy(max_attempts=args.max_retries + 1, delay=args.retry_delay)
-    except ValueError as exc:
-        parser.error(str(exc))
-
     run_id = args.run_id or (
         f"{plan.table}:{plan.days[0].isoformat()}:{plan.days[-1].isoformat()}:"
         f"{plan.template_sha}"
     )
-    return run(args.dsn, plan, run_id, execute=args.execute, limit=args.limit,
-               policy=policy)
+    return run(args.dsn, plan, run_id, execute=args.execute, limit=args.limit)
